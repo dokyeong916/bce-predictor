@@ -9,11 +9,14 @@ import requests
 import streamlit as st
 
 
-st.set_page_config(page_title="BCE Prediction Tool", page_icon="🧬", layout="wide")
+st.set_page_config(page_title="BCE Prediction Tool", page_icon="", layout="wide")
 
 UNIPROT_FASTA_URL = "https://rest.uniprot.org/uniprotkb/{accession}.fasta"
 VALID_AA = set("ACDEFGHIKLMNPQRSTVWY")
-MODEL_PATH = "bce_model.joblib"
+from pathlib import Path
+
+MODEL_PATH = Path("bce_conv_model.keras")
+META_PATH = Path("bce_conv_model_meta.json")
 
 
 # ---------- Helpers ----------
@@ -70,8 +73,10 @@ def extract_aac_features(peptide: str):
 
 @st.cache_resource(show_spinner=False)
 def load_local_model():
-    if not os.path.exists(MODEL_PATH):
-        return None
+    if MODEL_PATH.exists() and META_PATH.exists():
+        st.success("Local Conv1D model detected")
+    else:
+        st.info("No local Conv1D model found. Using demo predictor.")
     try:
         return joblib.load(MODEL_PATH)
     except Exception:
@@ -203,11 +208,10 @@ with st.sidebar:
     score_threshold = st.slider("Demo threshold", min_value=0.0, max_value=1.0, value=0.58, step=0.01)
     top_n = st.slider("Top results to show", min_value=3, max_value=20, value=5)
     st.markdown("---")
-    if os.path.exists(MODEL_PATH):
-        st.success("Local ML model detected: bce_model.joblib")
+    if MODEL_PATH.exists() and META_PATH.exists():
+        st.success("Local Conv1D model detected")
     else:
-        st.info("No local ML model found. The app is using the demo predictor.")
-
+        st.info("No local Conv1D model found. Using demo predictor.")
 col1, col2 = st.columns(2)
 
 with col1:
