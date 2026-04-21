@@ -1,6 +1,8 @@
+import os
 import re
 from typing import Optional, Tuple
 
+import joblib
 import matplotlib.pyplot as plt
 import pandas as pd
 import requests
@@ -11,6 +13,7 @@ st.set_page_config(page_title="BCE Prediction Tool", page_icon="🧬", layout="w
 
 UNIPROT_FASTA_URL = "https://rest.uniprot.org/uniprotkb/{accession}.fasta"
 VALID_AA = set("ACDEFGHIKLMNPQRSTVWY")
+MODEL_PATH = "bce_model.joblib"
 
 
 # ---------- Helpers ----------
@@ -58,8 +61,24 @@ def validate_sequence(sequence: str) -> Tuple[bool, str]:
     return True, "OK"
 
 
-def toy_bce_predictor(sequence: str, window: int = 12, threshold: float = 0.58) -> pd.DataFrame:
-    """Demo predictor only. Replace later with a real BCE model."""
+def extract_aac_features(peptide: str):
+    peptide = peptide.upper()
+    length = len(peptide)
+    aa_order = "ACDEFGHIKLMNPQRSTVWY"
+    return [peptide.count(aa) / length for aa in aa_order]
+
+
+@st.cache_resource(show_spinner=False)
+def load_local_model():
+    if not os.path.exists(MODEL_PATH):
+        return None
+    try:
+        return joblib.load(MODEL_PATH)
+    except Exception:
+        return None
+
+
+def simple_demo_predictor(sequence: str, window: int = 12, threshold: float = 0.58) -> pd.DataFrame:
     rows = []
     hydrophilic = set("DEHKNQRSTY")
 
@@ -76,6 +95,7 @@ def toy_bce_predictor(sequence: str, window: int = 12, threshold: float = 0.58) 
                 "peptide": peptide,
                 "score": round(score, 3),
                 "prediction": "BCE-like" if score >= threshold else "non-BCE-like",
+                "model": "demo",
             }
         )
 
@@ -83,6 +103,42 @@ def toy_bce_predictor(sequence: str, window: int = 12, threshold: float = 0.58) 
     if df.empty:
         return df
     return df.sort_values(["score", "start"], ascending=[False, True]).reset_index(drop=True)
+
+
+def ml_bce_predictor(sequence: str, model_bundle, window: int = 12, threshold: float = 0.5) -> pd.DataFrame:
+    rows = []
+
+    if len(sequence) < window:
+        window = len(sequence)
+
+    model = model_bundle["model"]
+
+    for i in range(0, len(sequence) - window + 1):
+        peptide = sequence[i : i + window]
+        features = extract_aac_features(peptide)
+        proba = float(model.predict_proba([features])[0][1])
+        rows.append(
+            {
+                "start": i + 1,
+                "end": i + window,
+                "peptide": peptide,
+                "score": round(proba, 3),
+                "prediction": "BCE-like" if proba >= threshold else "non-BCE-like",
+                "model": "local-ml",
+            }
+        )
+
+    df = pd.DataFrame(rows)
+    if df.empty:
+        return df
+    return df.sort_values(["score", "start"], ascending=[False, True]).reset_index(drop=True)
+
+
+def run_predictor(sequence: str, window: int, threshold: float) -> pd.DataFrame:
+    model_bundle = load_local_model()
+    if model_bundle is not None:
+        return ml_bce_predictor(sequence, model_bundle, window=window, threshold=threshold)
+    return simple_demo_predictor(sequence, window=window, threshold=threshold)
 
 
 def highlight_top_regions(df: pd.DataFrame, top_n: int = 5) -> pd.DataFrame:
@@ -147,7 +203,10 @@ with st.sidebar:
     score_threshold = st.slider("Demo threshold", min_value=0.0, max_value=1.0, value=0.58, step=0.01)
     top_n = st.slider("Top results to show", min_value=3, max_value=20, value=5)
     st.markdown("---")
-    st.info("This is a demo predictor. You can later replace it with a trained BCE model.")
+    if os.path.exists(MODEL_PATH):
+        st.success("Local ML model detected: bce_model.joblib")
+    else:
+        st.info("No local ML model found. The app is using the demo predictor.")
 
 col1, col2 = st.columns(2)
 
@@ -214,7 +273,7 @@ if predict_clicked:
         st.error(message)
     else:
         with st.spinner("Running demo predictor..."):
-            results = toy_bce_predictor(sequence, window=window_size, threshold=score_threshold)
+            results = run_predictor(sequence, window=window_size, threshold=score_threshold)
             top_hits = highlight_top_regions(results, top_n=top_n)
 
         if results.empty:
@@ -231,6 +290,8 @@ if predict_clicked:
                 st.metric("Top score", f"{results['score'].max():.3f}")
             with metric_col3:
                 st.metric("Predicted BCE-like windows", bce_count)
+
+            st.caption(f"Prediction mode: {results['model'].iloc[0]}")
 
             st.subheader("Highlighted sequence")
             st.markdown(
@@ -261,7 +322,7 @@ st.markdown("---")
 st.subheader("Next upgrades")
 st.markdown(
     """
-1. Replace the demo predictor with a real trained BCE model.
+1. Train a small local BCE model and save it as `bce_model.joblib`.
 2. Add known epitope lookup from IEDB.
 3. Improve sequence-level visualization.
 4. Add batch input and result export.
